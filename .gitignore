@@ -1,0 +1,14 @@
+# LaTeX build artifacts. The shipped PDF is tracked beside its source; these are
+# only what latexmk leaves behind on the way to it.
+*.aux
+*.fdb_latexmk
+*.fls
+*.log
+*.nav
+*.out
+*.snm
+*.synctex.gz
+*.toc
+*.vrb
+
+.DS_Store
