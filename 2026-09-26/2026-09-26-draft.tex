@@ -250,7 +250,7 @@ However, faithfulness up to this point remains a spec-testing problem; human aud
 \begin{columns}[c]
 \begin{column}{0.30\textwidth}
 {\scriptsize\raggedright
-Anamul single-handedly expanded this idea to a proof-of-concept in the GitHub repo
+Anamul expanded this idea to a proof-of-concept in the GitHub repo
 \textbf{Verus-KernelBench}.
 
 \vspace{8pt}
@@ -364,6 +364,188 @@ Most of the steps can be automated, although \alert{unfaithfully}.\par
   % association
   \draw[as] (n6H.east) -- (n6U.west);
 \end{tikzpicture}
+
+\end{frame}
+
+% =====================================================================
+\begin{frame}[t]{Task 47 through the PoC}
+
+\vspace{-8pt}
+\centering
+\begin{tikzpicture}[
+    x=1mm, y=1mm,
+    bx/.style={draw, rounded corners=1.5pt, line width=0.5pt, font=\tiny, align=left,
+               text width=40.5mm, inner sep=1.4pt, anchor=north,
+               execute at begin node={\hyphenpenalty=10000\exhyphenpenalty=10000}},
+    ag/.style={bx, draw=lgInk, fill=white, text=lgInk},
+    hv/.style={bx, draw=lgTeal, fill=lgTeal!8, text=lgInk},
+    hu/.style={bx, draw=lgAccent, fill=lgWashWarm, text=lgInk},
+    half/.style={text width=19.9mm},
+    fw/.style={-{Stealth[length=1.4mm]}, line width=0.5pt, draw=lgInk},
+    ph/.style={font=\scriptsize\bfseries, text=lgGrey, anchor=base},
+    gap/.style={node distance=3.2mm},
+  ]
+  \def\ok{{\color{lgGreen}\checkmark}}
+  \def\no{{\color{lgRed}$\boldsymbol{\times}$}}
+  \def\pass{\hfill\mbox{\color{lgGreen}\textbf{\checkmark\,PASS}}}
+
+  \node[ph] at (21, 1.2)  {PIN THE MEANING};
+  \node[ph] at (69, 1.2)  {BUILD AND PROVE};
+  \node[ph] at (117, 1.2) {TEST THE REAL THING};
+  \draw[lgGrey!60, line width=0.4pt] (0, 0) -- (138, 0);
+
+  % --- pin the meaning
+  \node[hv] (s1) at (21, -3.5) {\textbf{1\enspace Import}\hfill{\color{lgGrey}kbv}\\
+      \code{torch.sum(x, dim=1, keepdim=True)}\\ $x$: $128{\times}4096{\times}4095$\\
+      \ok\ copied verbatim, hashed};
+  \node[hu, gap, below=of s1] (s2) {\textbf{2\enspace Semantics}\hfill{\color{lgGrey}LLM $\to$ human}\\
+      sum over axis 1 $\cdot$ start at $+0.0$ $\cdot$ NaN, inf propagate\\
+      \ok\ approved (delegated review so far)};
+  \node[ag, gap, below=of s2] (s3) {\textbf{3\enspace Spec}\hfill{\color{lgGrey}LLM}\\
+      $y[b,j] = \sum_k x[b,k,j]$, in the kernel's order\\
+      + a verified CPU reference and test inputs};
+  \node[hv, gap, below=of s3] (s4) {\textbf{4\enspace Spec check}\hfill{\color{lgGrey}kbv}\\
+      agrees with PyTorch on 13/13 probes\\
+      rejects every corrupted answer\pass};
+  \node[hv, gap, below=of s4] (s5) {\textbf{5\enspace Freeze}\hfill{\color{lgGrey}kbv}\\
+      spec hash-locked; changes need human sign-off};
+  \draw[fw] (s1) -- (s2); \draw[fw] (s2) -- (s3); \draw[fw] (s3) -- (s4); \draw[fw] (s4) -- (s5);
+
+  % --- build and prove
+  \node[ag, half] (s6a) at (57.9, -3.5) {\textbf{6\enspace Tier A}\hfill{\color{lgGrey}LLM}\\
+      1 thread per output\\ order: \code{Linear}};
+  \node[ag, half] (s6b) at (80.1, -3.5) {\textbf{6\enspace Tier B}\hfill{\color{lgGrey}LLM}\\
+      256 threads per output\\ order: \code{TwoLevel(256)}};
+  \path (s6a.south) -- coordinate (mid) (s6b.south);
+  \node[hv, anchor=north] (s7) at (69, -18.5) {\textbf{7\enspace Prove}\hfill{\color{lgGrey}kbv $\cdot$ Verus}\\
+      A: 6 proved $\cdot$ B: 9 proved, race-free\pass};
+  \draw[fw] (s6a.south) |- ++(11.1, -2.2) -| (s7.north);
+  \draw[line width=0.5pt, draw=lgInk] (s6b.south) |- ++(-11.1, -2.2);
+
+  % 5 -> 6: out of the right side of 5, up the gutter, fork into both kernels
+  \draw[line width=0.5pt, draw=lgInk] (s5.east) -- (45, 0 |- s5.east) -- (45, -1.8) -| (69, -1.8);
+  \draw[fw] (57.9, -1.8) -- (s6a.north);
+  \draw[fw] (80.1, -1.8) -- (s6b.north);
+  \draw[line width=0.5pt, draw=lgInk] (57.9, -1.8) -- (80.1, -1.8);
+
+  % --- test the real thing
+  \node[hv] (s8) at (117, -3.5) {\textbf{8\enspace Run on GPU}\hfill{\color{lgGrey}kbv}\\
+      same file${\to}$PTX${\to}$GTX 1050: 11/11 cases match\\
+      both kernels\pass};
+  \node[hv, gap, below=of s8] (s9) {\textbf{9\enspace Break it on purpose}\hfill{\color{lgGrey}kbv}\\
+      mutated kernels rejected: A 6/6 $\cdot$ B 15/15\pass};
+  \node[hv, gap, below=of s9] (s10) {\textbf{10\enspace Original KernelBench test}\hfill{\color{lgGrey}kbv}\\
+      full size (8\,GiB input) on CUDA PyTorch\\
+      \no\ blocked: needs a large CUDA GPU};
+  \node[ph, anchor=base west] (vh) at ($(s10.south west) + (0, -4.6)$) {VERDICT};
+  \node[hv, anchor=north] (s11) at ($(s10.south) + (0, -6.2)$) {\textbf{11\enspace Accept}\hfill{\color{lgGrey}kbv}\\
+      \no\ not yet: V1, sanitizer, human review open\\
+      goal: G1 + G2 + TierB};
+  \draw[fw] (s8) -- (s9); \draw[fw] (s9) -- (s10); \draw[fw] (s10) -- (s11);
+
+  % 7 -> 8: out of the right side of 7, up the gutter, into the top of 8
+  \draw[fw] (s7.east) -- (93, 0 |- s7.east) -- (93, -1.8) -| (s8.north);
+\end{tikzpicture}
+
+\note[itemize]{
+\item Step 4: ``13/13 probes'' is V2 (6 exact-arithmetic cases and 7 edge-case rules). ``Rejects every corrupted answer'' is V3.
+\item Step 7: ``6 proved'' and ``9 proved'' are Verus proof obligations for the Tier A and Tier B kernels. Tier B's barrier uniformity comes from the lint, not the proof.
+\item Step 9: these are program mutants, meaning deliberately broken kernels, as opposed to step 4's corrupted outputs.
+}
+\end{frame}
+
+% =====================================================================
+\begin{frame}[fragile]{Review on the quality of LLM-generated kernels}
+
+{\scriptsize
+We have agreed that the quality we can maintain on this benchmark dataset depends on the time we have.
+Currently we found two potential deadlines:\par
+}
+
+\vspace{4pt}
+\begin{columns}[T]
+\begin{column}{0.40\textwidth}
+{\scriptsize
+\hd{Target.} LLM4Code @ ICSE 2027, 13 Nov \textcolor{lgGrey}{(tentative)}\\[3pt]
+\hd{Ambitious.} ISSTA 2027, 11 Jan: propose a study/methodology with dataset\par
+}
+
+\vspace{8pt}
+{\scriptsize
+\renewcommand{\arraystretch}{1.3}
+\begin{tabular}{@{}l l l@{}}
+\toprule
+\textbf{Criteria} & \multicolumn{2}{l}{\textbf{Confidence}} \\
+\midrule
+Spec faithfulness & \multicolumn{2}{l}{\good{\textbf{High}}} \\
+Technical rigor   & \bad{\textbf{Low}} (Nov) & \textcolor{lgAccent}{\textbf{Mid}} (Jan) \\
+\bottomrule
+\end{tabular}
+}
+\end{column}
+
+\begin{column}{0.56\textwidth}
+\begin{callout}[lgAccent]
+\scriptsize\raggedright
+\textbf{Technical rigor} is what Mahadi thinks the current dataset lacks, for example:
+\setlength\leftmargini{1.2em}
+\begin{itemize}\setlength\itemsep{2pt}
+  \item Verus does not support float arithmetic, but Mahadi finds that Anamul's current PoC replaces
+        float addition with a trusted \code{\#[verifier::external\_body]} function.
+  \item SOTA papers like \emph{Kuiper} do not do this; rather, they show the approximation explicitly.
+  \item The dataset's Rust code is generated by LLMs without the frameworks real GPU programmers use,
+        i.e.\ \code{cuda-oxide} or \code{cuTile-Rust}.
+  \item In Mahadi's own findings, using \code{cuda-oxide} or \code{cuTile-Rust} with in-place Verus
+        annotations, which real GPU communities would actually use, is more time-consuming and less
+        likely to fit the Nov deadline.
+\end{itemize}
+\end{callout}
+\end{column}
+\end{columns}
+
+\end{frame}
+
+% =====================================================================
+\begin{frame}{Blockers, Literature and Potential}
+
+\setlength\leftmargini{1.1em}
+\begin{columns}[T]
+\begin{column}{0.32\textwidth}
+\begin{codebox}[lgRed]{Blockers}
+\scriptsize\raggedright
+\begin{itemize}\setlength\itemsep{3pt}
+  \item Compiled CUDA code (PTX) needs an Nvidia GPU to run and test.
+  \item Anamul has a GTX 1050 with 2\,GB VRAM, which is insufficient for many KernelBench L1 tasks.
+  \item Mahadi has a Mac and currently works with the Google Colab CLI, which is also insufficient.
+  \item \textbf{Ask:} access to a modern Nvidia GPU with 24\,GB VRAM, like an RTX 4090.
+\end{itemize}
+\end{codebox}
+\end{column}
+
+\begin{column}{0.36\textwidth}
+\begin{codebox}[lgTeal]{Literature}
+\scriptsize\raggedright
+\begin{itemize}\setlength\itemsep{3pt}
+  \item \emph{Kuiper: GPU Kernel Verification in Pulse} does almost the same work we are doing,
+        so their dataset is helpful to cross-check against our Verus port.
+  \item \emph{ProofWright: Towards Agentic Formal Verification of CUDA} claims it will open-source
+        its artifact MLRocq, which converts PyTorch $\to$ Rocq ``deterministically'', but has not yet.
+        Early access would potentially make our work easier and give another base to cross-check against.
+\end{itemize}
+\end{codebox}
+\end{column}
+
+\begin{column}{0.28\textwidth}
+\begin{codebox}[lgGreen]{Potential}
+\scriptsize\raggedright
+\begin{itemize}\setlength\itemsep{3pt}
+  \item The KernelBench L1 tasks are our choice of initial contribution.
+  \item The Rust-CUDA space has much more potential for contributions, but I find that they are not
+        feasible within the time and scope of this program.
+\end{itemize}
+\end{codebox}
+\end{column}
+\end{columns}
 
 \end{frame}
 
