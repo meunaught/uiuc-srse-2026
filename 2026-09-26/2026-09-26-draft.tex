@@ -13,6 +13,7 @@
 \usepackage{tcolorbox}
 \usepackage{booktabs}
 \usepackage{graphicx}
+\usepackage{stmaryrd}
 
 \usetheme{metropolis}
 \metroset{sectionpage=progressbar, numbering=fraction, progressbar=frametitle}
@@ -85,8 +86,8 @@
 }
 
 % Title
-\title{Title}
-\subtitle{Subtitle}
+\title{Rust, CUDA and Verus}
+\subtitle{A PoC on Rust-CUDA Verifiable Kernels}
 \date{September 26, 2026}
 \author{Mahadi Hasan \and Anamul Haque Imtiaz}
 \institute{UIUC SRSE 2026}
@@ -96,29 +97,273 @@
 \maketitle
 
 % =====================================================================
-% SAMPLE -- layout only; replace or delete.
-\begin{frame}{Sample slide}
+\begin{frame}{From PyTorch to Rust}
 
 {\scriptsize
-One or two lines of framing: what this slide shows and why it is here.
+\hd{Source of the CUDA kernels:} KernelBench Level~1 tasks (for now).
 }
 
-\vspace{6pt}
-\begin{columns}[T]
-\begin{column}{0.48\textwidth}
-{\scriptsize
-\hd{Left heading}\\
-Supporting text for the left column.
-}
-\end{column}
+\vspace{10pt}
+\begin{center}
+\begin{tikzpicture}[node distance=14mm]
+  \node[stage] (kb) {KernelBench\\L1};
+  \node[stage, right=of kb] (xp) {Task $X_P$\\\tiny PyTorch};
+  \node[mem, right=24mm of xp] (xr) {Task $X_R$\\\tiny Rust};
+  \draw[flow] (kb) -- (xp);
+  \draw[flow] (xp) -- node[lbl, above] {LLM} (xr);
+  \draw[{Stealth[length=2mm]}-{Stealth[length=2mm]}, line width=0.7pt, draw=lgAccent, dashed]
+    ([yshift=-2mm]xp.south) to[bend right=25]
+    node[font=\scriptsize, text=lgAccent, below] {functionally equivalent?}
+    ([yshift=-2mm]xr.south);
+\end{tikzpicture}
+\end{center}
 
-\begin{column}{0.48\textwidth}
+\vspace{4pt}
 \begin{callout}[lgAccent]
 \scriptsize
-\textbf{Takeaway.} The one thing to remember from this slide.
+\textbf{Goal.} Guarantee that the translated task computes the same function as the original.
+\[
+  X_P, X_R : \mathcal{X} \to \mathcal{Y}
+  \qquad\qquad
+  \forall\, x \in \mathcal{X}.\;\; \llbracket X_P \rrbracket(x) \;=\; \llbracket X_R \rrbracket(x)
+\]
 \end{callout}
+
+\end{frame}
+
+% =====================================================================
+\begin{frame}[fragile]{Two KernelBench L1 tasks}
+
+\begin{columns}[T]
+\begin{column}{0.48\textwidth}
+\begin{codebox}{19\_ReLU.py}
+\begin{lstlisting}[language=Python, basicstyle=\ttfamily\tiny\color{lgInk}]
+class Model(nn.Module):
+    def __init__(self):
+        super(Model, self).__init__()
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return torch.relu(x)
+
+batch_size = 4096
+dim = 393216
+def get_inputs():
+    x = torch.rand(batch_size, dim)
+    return [x]
+def get_init_inputs():
+    return []
+\end{lstlisting}
+\end{codebox}
+
+\vspace{2pt}
+{\scriptsize
+\hd{What it computes.} Replaces every negative entry with zero; the shape is unchanged.
+\par\vspace{3pt}\centerline{$x \in \mathbb{R}^{4096 \times 393216}, \qquad y_{ij} = \max(0,\, x_{ij})$}
+}
+\end{column}
+
+\begin{column}{0.48\textwidth}
+\begin{codebox}{47\_Sum\_reduction\_over\_a\_dimension.py}
+\begin{lstlisting}[language=Python, basicstyle=\ttfamily\tiny\color{lgInk}]
+class Model(nn.Module):
+    def __init__(self, dim: int):
+        super(Model, self).__init__()
+        self.dim = dim
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return torch.sum(x, dim=self.dim, keepdim=True)
+
+batch_size = 128
+dim1 = 4096
+dim2 = 4095
+reduce_dim = 1
+def get_inputs():
+    x = torch.rand(batch_size, dim1, dim2)
+    return [x]
+def get_init_inputs():
+    return [reduce_dim]
+\end{lstlisting}
+\end{codebox}
+
+\vspace{2pt}
+{\scriptsize
+\hd{What it computes.} Adds up the entries along the middle axis, keeping it as size 1.
+\par\vspace{3pt}\centerline{$x \in \mathbb{R}^{128 \times 4096 \times 4095}, \qquad y_{b,0,k} = \sum_{j=0}^{4095} x_{b,j,k}$}
+}
 \end{column}
 \end{columns}
+
+\vfill
+{\tiny\color{lgGrey} Source: KernelBench @ \code{423217d}, \code{KernelBench/level1/}; docstrings and imports omitted.}
+
+\end{frame}
+
+% =====================================================================
+\begin{frame}[fragile]{Faithful spec extraction}
+
+{\scriptsize
+Initially, Mahadi worked on how to \emph{faithfully} extract a specification from a PyTorch source.
+The Python file \emph{is} the specification, so the job is \textbf{denotation}: what function does it compute?
+}
+
+\vspace{4pt}
+\begin{codebox}{Task 47 (PyTorch)}
+\begin{lstlisting}[language=Python, basicstyle=\ttfamily\tiny\color{lgInk}]
+return torch.sum(x, dim=1, keepdim=True)
+\end{lstlisting}
+\end{codebox}
+
+\vspace{2pt}
+{\scriptsize
+\newcommand{\qn}[1]{\tikz[baseline=(n.base)]\node[circle, fill=lgTeal, text=white, inner sep=1pt, font=\tiny\bfseries] (n) {#1};}
+\newcommand{\spec}[1]{\colorbox{lgWash}{\ttfamily\tiny\frenchspacing #1}}
+\renewcommand{\arraystretch}{1.35}
+\begin{tabular}{@{}p{0.38\textwidth}@{\hspace{6pt}}c@{\hspace{6pt}}l@{}}
+\multicolumn{1}{@{}l}{\hd{Question about I/O}} & & \hd{Spec it creates} \\
+\qn{1} How is the input \code{x} held?
+  & $\Rightarrow$ & \spec{x: Seq<i32>, rows: int, cols: int\quad// flat, row-major} \\
+\qn{2} Which inputs feed output cell \code{r}?
+  & $\Rightarrow$ & \spec{row(x, r, cols) = x.subrange(r*cols, r*cols + cols)} \\
+\qn{3} What is done with them?
+  & $\Rightarrow$ & \spec{fold\_sum(s) = if s.len() == 0 \{ 0 \} else \{ s[0] + fold\_sum(s.skip(1)) \}} \\
+\qn{4} What type is an output value?
+  & $\Rightarrow$ & \spec{fold\_sum(s: Seq<i32>) -> int\quad// overflow cannot hide in the spec} \\
+\qn{5} How many outputs, and what is each?
+  & $\Rightarrow$ & \spec{torch\_sum\_dim1(x, rows, cols) = Seq::new(rows, |r| fold\_sum(row(x, r, cols)))} \\
+\end{tabular}
+}
+
+\vspace{4pt}
+\begin{callout}[lgAccent]
+\scriptsize\raggedright
+\textbf{Insights.} Questions about I/O reveal the necessary specs.
+However, faithfulness up to this point remains a spec-testing problem; human audit remains the final standard.
+\end{callout}
+
+\vfill
+{\tiny\color{lgGrey} Source: \code{deliverables/2026-09-18/example.md}.}
+
+\end{frame}
+
+% =====================================================================
+\begin{frame}[t]{Verus-KernelBench}
+
+\vspace{10pt}
+\begin{columns}[c]
+\begin{column}{0.30\textwidth}
+{\scriptsize\raggedright
+Anamul single-handedly expanded this idea to a proof-of-concept in the GitHub repo
+\textbf{Verus-KernelBench}.
+
+\vspace{8pt}
+Most of the steps can be automated, although \alert{unfaithfully}.\par
+}
+\end{column}
+
+\begin{column}{0.68\textwidth}
+\centering
+\begin{tikzpicture}[
+    box/.style={stage, text width=34mm, minimum height=7mm, inner sep=2.5pt, align=left},
+    chk/.style={draw=lgAccent, line width=0.5pt, rounded corners=2pt, fill=lgWashWarm,
+                font=\tiny, text=lgInk, align=left, text width=44mm, inner sep=3pt},
+    prf/.style={chk, draw=lgGreen, fill=lgGreen!8},
+    tie/.style={draw=lgGrey, line width=0.5pt, dash pattern=on 1.5pt off 1.2pt},
+    sub/.style={font=\tiny, text=lgGrey},
+  ]
+  \node[box] (py)  {\textbf{PyTorch program}\\{\tiny\color{lgGrey}\code{reference.py}, verbatim}};
+  \node[box, below=7mm of py] (sp) {\textbf{Spec, frozen}\\{\tiny\color{lgGrey}pre/post from \code{semantics.md}}};
+  \node[box, below=7mm of sp] (kr) {\textbf{Kernel source}\\{\tiny\color{lgGrey}\code{kernel.rs}, Rust + proof}};
+  \node[box, below=7mm of kr] (gpu) {\textbf{GPU execution}\\{\tiny\color{lgGrey}PTX built from same file}};
+
+  \draw[flow] (py) -- coordinate (m1) (sp);
+  \draw[flow] (sp) -- coordinate (m2) (kr);
+  \draw[flow] (kr) -- coordinate (m3) (gpu);
+
+  \node[chk, anchor=west] (t1) at ($(m1 -| py.east)+(7mm,0)$) {\textbf{(T) Is the spec right?}\\Tested vs PyTorch, human-reviewed};
+  \node[prf, anchor=west] (p2) at ($(m2 -| py.east)+(7mm,0)$) {\textbf{(P) Does the kernel meet it?}\\Proved by Verus, all inputs};
+  \node[chk, anchor=west] (t3) at ($(m3 -| py.east)+(7mm,0)$) {\textbf{(T) Is that the code that runs?}\\Same file, then GPU-tested};
+  \draw[tie] (m1) -- (t1.west);
+  \draw[tie] (m2) -- (p2.west);
+  \draw[tie] (m3) -- (t3.west);
+
+  \node[mem, below=4mm of gpu.south west, anchor=north west, text width=86mm,
+        minimum height=7mm, inner sep=3pt, align=left] (kbv)
+    {\textbf{\code{kbv} harness owns every verdict}\\{\tiny Runs checks, writes hash-locked evidence}};
+
+  \node[sub, below=1.5mm of kbv.south west, anchor=north west]
+    {\textbf{\color{lgAccent}(T)} = checked by testing \qquad \textbf{\color{lgGreen}(P)} = checked by proof};
+\end{tikzpicture}
+\end{column}
+\end{columns}
+
+\end{frame}
+
+% =====================================================================
+\begin{frame}[t]{A verbose diagram of the PoC}
+
+\vspace{-8pt}
+\centering
+\begin{tikzpicture}[
+    x=1mm, y=1mm,
+    bx/.style={draw, rounded corners=1.5pt, line width=0.5pt, font=\tiny, align=center,
+               text width=40mm, inner sep=1.2pt, minimum height=3.4mm},
+    ag/.style={bx, draw=lgInk, fill=white, text=lgInk},
+    hv/.style={bx, draw=lgTeal, fill=lgTeal!8, text=lgInk},
+    hu/.style={bx, draw=lgAccent, fill=lgWashWarm, text=lgInk},
+    fw/.style={-{Stealth[length=1.4mm]}, line width=0.5pt, draw=lgInk},
+    bk/.style={-{Stealth[length=1.4mm]}, line width=0.5pt, draw=lgRed, dashed},
+    as/.style={line width=0.6pt, draw=lgGrey, dotted},
+    el/.style={font=\tiny\itshape, inner sep=1pt},
+    rn/.style={font=\tiny, text=lgGrey, anchor=east},
+    ln/.style={font=\scriptsize\bfseries, anchor=base},
+  ]
+  % lanes
+  \def\xa{21}\def\xh{67}\def\xu{113}
+  \def\p{5.55}
+  \node[ln, text=lgInk]    at (\xa, 1.2) {LLM agent writes};
+  \node[ln, text=lgTeal]   at (\xh, 1.2) {kbv harness checks};
+  \node[ln, text=lgAccent] at (\xu, 1.2) {Human approves};
+  \draw[lgGrey!60, line width=0.4pt] (-4, 0) -- (136, 0);
+  \draw[lgGrey!40, line width=0.4pt] (44, 4.5) -- (44, -12*\p);
+  \draw[lgGrey!40, line width=0.4pt] (90, 4.5) -- (90, -12*\p);
+
+  % row numbers
+  \foreach \i in {1,...,12} \node[rn] at (-1, -\i*\p+1.8) {\i};
+
+  \node[hv] (n1)  at (\xh, -1*\p+1.8)  {\textbf{Import task}\enspace{\color{lgGrey}copy verbatim, hash it}};
+  \node[ag] (n2)  at (\xa, -2*\p+1.8)  {\textbf{Draft semantics}\enspace{\color{lgGrey}\code{semantics.md}}};
+  \node[hu] (n3)  at (\xu, -3*\p+1.8)  {\textbf{Approve meaning}\enspace{\color{lgGrey}signs \code{semantics.md}}};
+  \node[ag] (n4)  at (\xa, -4*\p+1.8)  {\textbf{Write spec + tests}\enspace{\color{lgGrey}spec, reference, inputs}};
+  \node[hv] (n5)  at (\xh, -5*\p+1.8)  {\textbf{Spec check}\enspace{\color{lgGrey}V2 vs PyTorch, V3 mutants}};
+  \node[hv] (n6H) at (\xh, -6*\p+1.8)  {\textbf{Freeze spec}\enspace{\color{lgGrey}hash-locked from here}};
+  \node[hu] (n6U) at (\xu, -6*\p+1.8)  {\textbf{Approve changes}\enspace{\color{lgGrey}spec change requests}};
+  \node[ag] (n7)  at (\xa, -7*\p+1.8)  {\textbf{Write kernel + proof}\enspace{\color{lgGrey}\code{kernel.rs}, code and proof}};
+  \node[hv] (n8)  at (\xh, -8*\p+1.8)  {\textbf{Verify}\enspace{\color{lgGrey}Verus proof + lint}};
+  \node[hv] (n9)  at (\xh, -9*\p+1.8)  {\textbf{GPU test}\enspace{\color{lgGrey}PTX vs verified reference}};
+  \node[hv] (n10) at (\xh, -10*\p+1.8) {\textbf{Program mutants}\enspace{\color{lgGrey}broken kernels must fail}};
+  \node[hv] (n11) at (\xh, -11*\p+1.8) {\textbf{Original test (V1)}\enspace{\color{lgGrey}KernelBench, full size}};
+  \node[hv] (n12) at (\xh, -12*\p+1.8) {\textbf{Accept}\enspace{\color{lgGrey}writes status + claims}};
+
+  % forward: across lanes, leave the facing side, then turn down into the top
+  \draw[fw] (n1.west) -| (n2.north);
+  \draw[fw] (n2.east) -| (n3.north);
+  \draw[fw] ([yshift=-0.7mm]n3.west) -| node[el, pos=0.25, below, text=lgInk] {approved} ([xshift=3mm]n4.north);
+  \draw[fw] (n4.east) -| (n5.north);
+  \draw[fw] (n6H.west) -| (n7.north);
+  \draw[fw] (n7.east) -| (n8.north);
+  % forward: within the harness lane
+  \draw[fw] (n5) -- node[el, right, xshift=0.6mm, text=lgInk] {pass} (n6H);
+  \draw[fw] (n8) -- node[el, right, xshift=0.6mm, text=lgInk] {pass} (n9);
+  \draw[fw] (n9) -- (n10);
+  \draw[fw] (n10) -- (n11);
+  \draw[fw] (n11) -- (n12);
+
+  % send back: leave the left of the check, run under the agent box, turn up
+  \draw[bk] ([yshift=0.7mm]n3.west) -| node[el, pos=0.25, above, text=lgRed] {sends back} ([xshift=-6mm]n2.south);
+  \draw[bk] (n5.west) -| node[el, pos=0.3, above, text=lgRed] {fail $\to$ repair} ([xshift=-6mm]n4.south);
+  \draw[bk] (n8.west) -| node[el, pos=0.3, above, text=lgRed] {fail $\to$ repair} ([xshift=-6mm]n7.south);
+
+  % association
+  \draw[as] (n6H.east) -- (n6U.west);
+\end{tikzpicture}
 
 \end{frame}
 
